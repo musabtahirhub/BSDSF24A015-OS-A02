@@ -115,3 +115,41 @@
     - `case MODE_HORIZONTAL`: calls `display_columns_horizontal(names, count)`
     - `case MODE_VERTICAL`: calls `display_columns_down_across(names, count)`
   - This architecture ensures high modularity, eliminates duplicated directory reading code, and ensures that features like sorting (Feature-5) and coloring (Feature-6) apply uniformly to all display modes with zero code duplication.
+
+---
+
+## Feature-5: ls-v1.4.0 – Alphabetical Sort
+
+### 1. Necessity of Buffering Directory Entries Before Sorting & Potential Drawbacks
+- **Why In-Memory Buffering is Mandatory:**
+  - The POSIX directory reading interface (`opendir()`, `readdir()`) operates as a forward-only stream. `readdir()` yields directory entries in arbitrary, unsorted order dictated by the file system's internal structures (e.g., ext4 directory hash trees or directory entry blocks).
+  - Standard comparison-based sorting algorithms (such as Quicksort) require arbitrary random access to compare and swap pairs of elements across the collection. Because an active directory stream cannot be randomly indexed or swapped in-place on disk, the application must read and store all filenames into an in-memory random-access container (a dynamic array of pointers `char **`) before invoking `qsort()`.
+- **Potential Drawbacks for Massive Directories (Millions of Files):**
+  - **Memory Exhaustion (High RAM Footprint):** Storing millions of filename strings and pointer arrays consumes substantial heap memory. For $10^6$ files with an average name length of 32 bytes, holding pointers (8 bytes each) plus dynamically allocated strings with `malloc` heap overhead can consume hundreds of megabytes of RAM, risking Out-Of-Memory (`OOM`) crashes or heavy swapping.
+  - **Latency and User Delay (No Streaming Feedback):** The program cannot display a single entry until all millions of entries have been traversed and sorted ($O(N \log N)$ complexity). This introduces significant execution latency where the user experiences a frozen terminal.
+  - **Alternative Production Approaches:** For directories with millions of items, high-performance utilities use streaming external merge sorts (spilling sorted chunks to temporary files) or present an unsorted stream immediately unless the user explicitly requests sorting.
+
+### 2. Purpose and Signature of the `qsort()` Comparison Function
+- **Signature of the Comparison Callback:**
+  - In standard C library `<stdlib.h>`, the `qsort` function is declared as:
+    ```c
+    void qsort(void *base, size_t nmemb, size_t size,
+               int (*compar)(const void *, const void *));
+    ```
+  - For sorting an array of strings (`char *names[]`), our comparison function is:
+    ```c
+    int compare_filenames(const void *a, const void *b) {
+        const char *str1 = *(const char * const *)a;
+        const char *str2 = *(const char * const *)b;
+        return strcmp(str1, str2);
+    }
+    ```
+- **How It Works and Contract:**
+  - `qsort()` passes pointers to the two elements being compared to the callback. Because the array elements being sorted are pointers to strings (`char *`), `a` and `b` point to those array elements, meaning they have the effective type `char **`.
+  - The function dereferences `a` and `b` to retrieve the actual string pointers `char *`, and calls `strcmp(str1, str2)`:
+    - Returns `< 0` if `str1` lexicographically precedes `str2`.
+    - Returns `0` if `str1` and `str2` are identical.
+    - Returns `> 0` if `str1` lexicographically follows `str2`.
+- **Why It Must Take `const void *` Arguments:**
+  - **Polymorphic Type Generality:** C lacks templates or generics. The standard C library achieves polymorphism by using `void *` (generic untyped pointer). This allows `qsort()` to sort arbitrary arrays of any data type (integers, structs, floats, pointers) without knowing the underlying element type.
+  - **Const-Correctness:** The `const` qualifier guarantees that the comparison callback will inspect the referenced data without mutating it, preserving data integrity during sorting operations.

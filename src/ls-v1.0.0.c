@@ -1,6 +1,6 @@
 /*
  * Programming Assignment 02: ls
- * Version 1.3.0: Horizontal Column Display (-x Option)
+ * Version 1.4.0: Alphabetical Sort
  */
 #include <dirent.h>
 #include <errno.h>
@@ -25,6 +25,13 @@ typedef enum {
 } DisplayMode;
 
 static DisplayMode display_mode = MODE_VERTICAL;
+
+/* Comparison function for qsort to sort string pointers alphabetically */
+int compare_filenames(const void *a, const void *b) {
+    const char *str1 = *(const char * const *)a;
+    const char *str2 = *(const char * const *)b;
+    return strcmp(str1, str2);
+}
 
 /* Detect current terminal column width using ioctl */
 int get_terminal_width(void) {
@@ -282,6 +289,11 @@ void do_ls(const char *dir) {
     }
 
     closedir(dp);
+
+    /* Sort entries alphabetically before passing to display functions */
+    if (count > 1) {
+        qsort(names, count, sizeof(char *), compare_filenames);
+    }
 
     /* Dispatch to appropriate display function based on selected mode */
     switch (display_mode) {
