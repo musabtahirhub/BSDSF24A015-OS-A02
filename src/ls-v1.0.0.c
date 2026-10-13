@@ -1,6 +1,6 @@
 /*
  * Programming Assignment 02: ls
- * Version 1.1.0: Complete Long Listing Format (-l)
+ * Version 1.2.0: Column Display (Down Then Across)
  */
 #include <dirent.h>
 #include <errno.h>
@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -17,6 +18,15 @@
 extern int errno;
 
 static int opt_l = 0;
+
+/* Detect current terminal column width using ioctl */
+int get_terminal_width(void) {
+    struct winsize ws;
+    if (isatty(STDOUT_FILENO) && ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        return ws.ws_col;
+    }
+    return 80; /* Fallback to standard 80 columns when stdout is not a terminal */
+}
 
 /* Convert st_mode into a 10-character permissions string */
 void mode_to_letters(mode_t mode, char str[]) {
@@ -58,7 +68,44 @@ void mode_to_letters(mode_t mode, char str[]) {
     }
 }
 
-/* Default simple listing (v1.0.0 behavior) */
+/* Display filenames in multiple columns: formatted "down then across" */
+void display_columns_down_across(char **names, size_t count) {
+    if (count == 0) return;
+
+    int term_width = get_terminal_width();
+    size_t max_len = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t len = strlen(names[i]);
+        if (len > max_len) {
+            max_len = len;
+        }
+    }
+
+    int spacing = 2;
+    int col_width = (int)max_len + spacing;
+    int num_cols = term_width / col_width;
+    if (num_cols < 1) num_cols = 1;
+    if ((size_t)num_cols > count) num_cols = (int)count;
+
+    int num_rows = ((int)count + num_cols - 1) / num_cols;
+
+    for (int r = 0; r < num_rows; r++) {
+        for (int c = 0; c < num_cols; c++) {
+            int idx = r + c * num_rows;
+            if ((size_t)idx < count) {
+                int next_idx = r + (c + 1) * num_rows;
+                if (c + 1 < num_cols && (size_t)next_idx < count) {
+                    printf("%-*s", col_width, names[idx]);
+                } else {
+                    printf("%s", names[idx]);
+                }
+            }
+        }
+        printf("\n");
+    }
+}
+
+/* Default listing with column display (v1.2.0 behavior) */
 void do_ls(const char *dir) {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -66,11 +113,29 @@ void do_ls(const char *dir) {
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
     }
+
+    char **names = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+
     errno = 0;
     while ((entry = readdir(dp)) != NULL) {
         if (entry->d_name[0] == '.')
             continue;
-        printf("%s\n", entry->d_name);
+        if (count >= capacity) {
+            capacity = (capacity == 0) ? 16 : capacity * 2;
+            char **new_names = realloc(names, capacity * sizeof(char *));
+            if (!new_names) {
+                perror("realloc failed");
+                closedir(dp);
+                for (size_t i = 0; i < count; i++) free(names[i]);
+                free(names);
+                return;
+            }
+            names = new_names;
+        }
+        names[count] = strdup(entry->d_name);
+        count++;
     }
 
     if (errno != 0) {
@@ -78,6 +143,13 @@ void do_ls(const char *dir) {
     }
 
     closedir(dp);
+
+    display_columns_down_across(names, count);
+
+    for (size_t i = 0; i < count; i++) {
+        free(names[i]);
+    }
+    free(names);
 }
 
 /* Long listing format (-l) */
