@@ -1,6 +1,6 @@
 /*
  * Programming Assignment 02: ls
- * Version 1.5.0: Colorized Output Based on File Type
+ * Version 1.6.0: Recursive Listing (-R Option)
  */
 #include <dirent.h>
 #include <errno.h>
@@ -33,6 +33,8 @@ typedef enum {
 } DisplayMode;
 
 static DisplayMode display_mode = MODE_VERTICAL;
+static int recursive_flag = 0;
+static int printed_any_dir = 0;
 
 /* Check if filename represents an archive / tarball */
 int is_archive(const char *name) {
@@ -213,7 +215,10 @@ void display_columns_horizontal(const char *dir, char **names, size_t count) {
 
 /* Long listing format (-l) */
 void display_long_listing(const char *dir, char **names, size_t count) {
-    if (count == 0) return;
+    if (count == 0) {
+        printf("total 0\n");
+        return;
+    }
 
     /* Gather metadata and determine column widths for alignment */
     struct stat *stats = malloc(count * sizeof(struct stat));
@@ -318,11 +323,19 @@ void display_long_listing(const char *dir, char **names, size_t count) {
 
 /* Core directory listing function */
 void do_ls(const char *dir) {
-    struct dirent *entry;
     DIR *dp = opendir(dir);
     if (dp == NULL) {
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
+    }
+
+    if (recursive_flag) {
+        if (printed_any_dir > 0) {
+            printf("\n%s:\n", dir);
+        } else {
+            printf("%s:\n", dir);
+        }
+        printed_any_dir = 1;
     }
 
     char **names = NULL;
@@ -330,6 +343,7 @@ void do_ls(const char *dir) {
     size_t capacity = 0;
 
     errno = 0;
+    struct dirent *entry;
     while ((entry = readdir(dp)) != NULL) {
         if (entry->d_name[0] == '.')
             continue;
@@ -374,6 +388,27 @@ void do_ls(const char *dir) {
             break;
     }
 
+    /* If recursive mode is enabled, recursively traverse subdirectories */
+    if (recursive_flag) {
+        for (size_t i = 0; i < count; i++) {
+            char sub_path[2048];
+            if (strcmp(dir, "/") == 0) {
+                snprintf(sub_path, sizeof(sub_path), "/%s", names[i]);
+            } else {
+                snprintf(sub_path, sizeof(sub_path), "%s/%s", dir, names[i]);
+            }
+
+            struct stat st;
+            if (lstat(sub_path, &st) == 0) {
+                if (S_ISDIR(st.st_mode)) {
+                    if (strcmp(names[i], ".") != 0 && strcmp(names[i], "..") != 0) {
+                        do_ls(sub_path);
+                    }
+                }
+            }
+        }
+    }
+
     for (size_t i = 0; i < count; i++) {
         free(names[i]);
     }
@@ -382,7 +417,7 @@ void do_ls(const char *dir) {
 
 int main(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "lx")) != -1) {
+    while ((opt = getopt(argc, argv, "lxR")) != -1) {
         switch (opt) {
             case 'l':
                 display_mode = MODE_LONG;
@@ -390,8 +425,11 @@ int main(int argc, char *argv[]) {
             case 'x':
                 display_mode = MODE_HORIZONTAL;
                 break;
+            case 'R':
+                recursive_flag = 1;
+                break;
             default:
-                fprintf(stderr, "Usage: %s [-l] [-x] [directory...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l] [-x] [-R] [directory...]\n", argv[0]);
                 exit(EXIT_FAILURE);
         }
     }
@@ -401,11 +439,11 @@ int main(int argc, char *argv[]) {
         do_ls(".");
     } else {
         for (int i = optind; i < argc; i++) {
-            if (num_dirs > 1) {
+            if (!recursive_flag && num_dirs > 1) {
                 printf("%s:\n", argv[i]);
             }
             do_ls(argv[i]);
-            if (num_dirs > 1 && i < argc - 1) {
+            if (!recursive_flag && num_dirs > 1 && i < argc - 1) {
                 puts("");
             }
         }

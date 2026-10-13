@@ -194,3 +194,34 @@
     }
     ```
   - It is critical to first verify that the file is a regular file (`S_ISREG(mode)`), because directory entries also have execute bits (`x` on directories grants permission to search or traverse into the directory). Verifying `S_ISREG(mode)` ensures that directories are colored with the directory color (blue) rather than being mistakenly classified as green executable binaries.
+
+---
+
+## Feature-7: ls-v1.6.0 – Recursive Listing (-R Option)
+
+### 1. Base Case in Recursive Functions and in Recursive `ls`
+- **Definition and Role of a Base Case:**
+  - In computer science and algorithm design, a **base case** is a termination condition that produces a direct result without making further recursive calls. It serves as the bottom of the recursion stack, ensuring that the function terminates cleanly and avoids infinite recursion (which would cause a stack overflow error and segment fault).
+- **The Base Case in Recursive `ls`:**
+  - A file system directory tree is a hierarchical, directed acyclic graph (ignoring directory hard links, which Unix disallows).
+  - In our recursive implementation of `do_ls(dir)`:
+    1. **Leaf Directories (No Subdirectories):** When `do_ls()` is called on a directory that contains only regular files (or is completely empty), the loop checking directory entries (`S_ISDIR(st.st_mode)`) finds no child directories. Since no child directories exist to invoke `do_ls()`, the function returns without spawning new recursive calls. This constitutes the natural base case of the tree traversal.
+    2. **Filtering Loop References (`.` and `..`):** Every Unix directory entry contains self (`.`) and parent (`..`) references. If these were followed recursively, `.` would immediately cause an infinite loop recursing into the same directory forever. By explicitly skipping names starting with `.` (or filtering `strcmp(name, ".") == 0 || strcmp(name, "..") == 0`), these cyclical references are discarded, preventing infinite recursion loops.
+    3. **Preventing Symlink Recursion via `lstat()`:** If a symbolic link points to a parent or ancestor directory (a circular symlink), using `lstat()` ensures that `st.st_mode` reflects `S_IFLNK` rather than `S_IFDIR`. Since `S_ISDIR()` evaluates to false for symbolic links, the traversal does not descend into symlinked directories, preventing infinite cyclical recursion.
+    4. **Unreadable / Inaccessible Directories:** If a subdirectory cannot be opened (`opendir() == NULL`), `do_ls` prints an error message to stderr and returns immediately, acting as a defensive terminal base case for permission-denied subtrees.
+
+### 2. Importance of Full Path Construction in Recursive Directory Traversal
+- **Difference Between Relative Filenames and Path Resolution:**
+  - When `readdir()` reads entries inside a directory, `entry->d_name` contains only the base filename of the item (e.g., `"child"`), not its location relative to the process's current working directory (CWD).
+  - System calls such as `opendir()`, `stat()`, and `lstat()` interpret relative path arguments with respect to the **current working directory (CWD) of the process**, not with respect to the directory currently being processed by the function.
+- **What Happens If `do_ls("subdir")` Is Called Without Constructing the Full Path:**
+  - Suppose a user launches `ls -R /tmp/test_dir` while the process CWD is `/home/user`.
+  - Inside `/tmp/test_dir`, there exists a subdirectory called `subdir`.
+  - If the program merely calls `do_ls("subdir")`:
+    - The OS kernel attempts to resolve `"subdir"` relative to the process's working directory (`/home/user/subdir`).
+    - Since `/home/user/subdir` does not exist, `opendir("subdir")` fails with `ENOENT` ("No such file or directory"), or worse, opens an unrelated directory if a folder named `subdir` happens to exist in `/home/user`!
+  - Likewise, running `lstat("subdir", &st)` before recursing would attempt to inspect `./subdir` rather than `/tmp/test_dir/subdir`, returning `-1` or inspecting the wrong file entirely.
+- **Why Full Path Construction (`parent_dir/subdir`) Is Essential:**
+  - Constructing the complete relative or absolute path (e.g., using `snprintf(sub_path, sizeof(sub_path), "%s/%s", dir, names[i])`) ensures that every subsequent system call (`lstat`, `opendir`) receives an unambiguous path that the kernel can resolve correctly regardless of the process's active CWD.
+  - This preserves path context throughout arbitrary levels of nested recursion.
+
