@@ -74,3 +74,44 @@
   - **Screen Space Underutilization:** On modern widescreen monitors, terminal emulators frequently have widths of 120, 160, 200, or more columns. A hardcoded 80-column limit forces filenames into unnecessarily few columns and long vertical lists, wasting over 50% of the available display space.
   - **Ugly Line Wrapping on Narrow Screens:** If the terminal window is tiled, split, or resized below 80 columns (e.g., 60 columns on a split pane or mobile SSH session), an 80-column layout will overshoot the right edge of the terminal. The terminal emulator will wrap the overflowing text onto the subsequent line, corrupting column alignment and rendering the output unreadable.
   - **Adaptive Usability:** Using `ioctl` guarantees that the layout adapts in real time to whatever terminal size the user configures, providing a clean, professional command-line experience identical to GNU `ls`.
+
+---
+
+## Feature-4: ls-v1.3.0 – Horizontal Column Display (-x Option)
+
+### 1. Implementation Complexity Comparison: Vertical ("Down Then Across") vs. Horizontal ("Across") Logic
+- **Horizontal Printing Logic ("Across"):**
+  - **Sequential Streaming:** Horizontal output directly follows the natural streaming nature of terminal text. The program can process filenames sequentially from index $0$ to $N-1$.
+  - **Minimal Pre-Calculation:** The only required pre-calculations are determining the maximum filename length to fix the column width, and retrieving the terminal width. As files are printed, the program maintains a running horizontal cursor position counter (`current_pos`). When adding the next column width would exceed the terminal boundary, it outputs `\n` and resets the counter to zero.
+  - **Single Linear Loop:** A single `for (size_t i = 0; i < count; i++)` loop suffices without needing multidimensional coordinate math.
+- **Vertical Printing Logic ("Down Then Across"):**
+  - **Non-Sequential Strided Indexing:** Because terminal lines cannot be revisited after printing, the program must calculate the 2D layout geometry ($R$ rows by $C$ columns) before printing any text.
+  - **Extensive Pre-Calculation:** The program must pre-compute:
+    1. Maximum entry length and column slot width ($W = \text{max\_len} + \text{spacing}$).
+    2. Column count: $C = \lfloor \text{term\_width} / W \rfloor$.
+    3. Row count: $R = \lceil N / C \rceil$.
+    4. Two-dimensional index mapping for each grid cell: $\text{index} = r + c \times R$.
+  - **Nested 2D Traversal:** Requires nested loops (`for r in 0..R-1` and `for c in 0..C-1`) and bounds checking to ensure stride jumps do not read past array boundaries.
+- **Conclusion:**
+  - The "down then across" (vertical) layout requires significantly more pre-calculation because the physical output medium (row-by-row stream) is orthogonal to the logical ordering of the data (column-by-column).
+
+### 2. Strategy for Managing Different Display Modes (`-l`, `-x`, and Default)
+- **State Management via `enum DisplayMode`:**
+  - Rather than scattering multiple uncoordinated boolean flags across the codebase, a clean `enum` was introduced to encapsulate mutually exclusive display behaviors:
+    ```c
+    typedef enum {
+        MODE_VERTICAL,   /* Default: down then across */
+        MODE_LONG,       /* -l: detailed long listing */
+        MODE_HORIZONTAL  /* -x: horizontal row-major listing */
+    } DisplayMode;
+    static DisplayMode display_mode = MODE_VERTICAL;
+    ```
+- **Command-Line Option Parsing with `getopt()`:**
+  - In `main()`, `getopt(argc, argv, "lx")` parses the flags and sets `display_mode` accordingly. Subsequent flags override or set the active mode cleanly.
+- **Unified Gathering and Single-Point Dispatching:**
+  - In `do_ls()`, directory reading is completely decoupled from rendering. `do_ls()` collects all valid directory entries into a dynamically allocated array `char **names`.
+  - Once reading is complete, a concise `switch (display_mode)` statement directs the collected array to the appropriate specialized rendering function:
+    - `case MODE_LONG`: calls `display_long_listing(dir, names, count)`
+    - `case MODE_HORIZONTAL`: calls `display_columns_horizontal(names, count)`
+    - `case MODE_VERTICAL`: calls `display_columns_down_across(names, count)`
+  - This architecture ensures high modularity, eliminates duplicated directory reading code, and ensures that features like sorting (Feature-5) and coloring (Feature-6) apply uniformly to all display modes with zero code duplication.
