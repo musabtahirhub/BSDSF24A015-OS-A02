@@ -153,3 +153,44 @@
 - **Why It Must Take `const void *` Arguments:**
   - **Polymorphic Type Generality:** C lacks templates or generics. The standard C library achieves polymorphism by using `void *` (generic untyped pointer). This allows `qsort()` to sort arbitrary arrays of any data type (integers, structs, floats, pointers) without knowing the underlying element type.
   - **Const-Correctness:** The `const` qualifier guarantees that the comparison callback will inspect the referenced data without mutating it, preserving data integrity during sorting operations.
+
+---
+
+## Feature-6: ls-v1.5.0 – Colorized Output Based on File Type
+
+### 1. How ANSI Escape Codes Produce Color in a Standard Linux Terminal
+- **Mechanism of In-Band Terminal Control:**
+  - Modern Linux terminal emulators follow the ANSI/VT100 control sequence standards (ECMA-48). Rather than providing separate out-of-band APIs for styling, control information is transmitted **in-band** within the standard byte stream using special "escape sequences".
+  - An escape sequence begins with the ASCII Escape character (`ESC`, hex `0x1B`, octal `\033`, decimal `27`), followed by the left bracket `[` (forming the Control Sequence Introducer, or **CSI**).
+  - The format for Select Graphic Rendition (SGR) is:
+    $$\text{ESC} \ [ \ \langle \text{parameters} \rangle \ \text{m}$$
+  - When the terminal emulator's parser encounters `\033[`, it stops rendering characters directly to the screen grid and instead switches into an internal state machine to interpret the following parameter codes.
+- **Specific Code Sequence for Printing Text in Green:**
+  - The parameter `32` sets foreground color to green:
+    - Normal Green: `"\033[0;32m"` (`0` = normal attribute, `32` = green foreground).
+    - Bold/Bright Green: `"\033[1;32m"` (`1` = bold/bright attribute).
+  - To print a green string safely without bleeding color into subsequent terminal commands, the color must be reset using the reset sequence `"\033[0m"`:
+    ```c
+    printf("\033[0;32m%s\033[0m", filename);
+    ```
+
+### 2. Checking Executable Permission Bits in `st_mode`
+- **Bitwise Layout of Execution Permissions in `st_mode`:**
+  - The file mode field `st_mode` in `struct stat` is a bitmask where specific bits encode read, write, and execute permissions partitioned into three distinct classes of users:
+    1. **Owner/User Execution (`S_IXUSR`):**
+       - Defined as octal `00100` (`0x0040`).
+       - Bit test: `(st_mode & S_IXUSR) != 0`
+    2. **Group Execution (`S_IXGRP`):**
+       - Defined as octal `00010` (`0x0008`).
+       - Bit test: `(st_mode & S_IXGRP) != 0`
+    3. **Others/World Execution (`S_IXOTH`):**
+       - Defined as octal `00001` (`0x0001`).
+       - Bit test: `(st_mode & S_IXOTH) != 0`
+- **Determining If a File Is Executable:**
+  - To verify whether a file is executable by **any** entity (owner, group, or others), we combine the three bits using the bitwise OR operator `|` into a composite mask, and apply a bitwise AND `&` against `st_mode`:
+    ```c
+    if (S_ISREG(mode) && (mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+        /* File is a regular file and has executable permissions */
+    }
+    ```
+  - It is critical to first verify that the file is a regular file (`S_ISREG(mode)`), because directory entries also have execute bits (`x` on directories grants permission to search or traverse into the directory). Verifying `S_ISREG(mode)` ensures that directories are colored with the directory color (blue) rather than being mistakenly classified as green executable binaries.

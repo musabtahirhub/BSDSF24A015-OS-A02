@@ -1,6 +1,6 @@
 /*
  * Programming Assignment 02: ls
- * Version 1.4.0: Alphabetical Sort
+ * Version 1.5.0: Colorized Output Based on File Type
  */
 #include <dirent.h>
 #include <errno.h>
@@ -17,6 +17,14 @@
 
 extern int errno;
 
+/* ANSI Escape Codes for Terminal Colors */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"  /* Directory */
+#define COLOR_GREEN   "\033[0;32m"  /* Executable */
+#define COLOR_RED     "\033[0;31m"  /* Archive / Tarball */
+#define COLOR_PINK    "\033[0;35m"  /* Symbolic Link */
+#define COLOR_REVERSE "\033[7m"     /* Special Files (device, socket, fifo) */
+
 /* Display modes supported by ls */
 typedef enum {
     MODE_VERTICAL,   /* Default: down then across */
@@ -25,6 +33,46 @@ typedef enum {
 } DisplayMode;
 
 static DisplayMode display_mode = MODE_VERTICAL;
+
+/* Check if filename represents an archive / tarball */
+int is_archive(const char *name) {
+    if (strstr(name, ".tar") != NULL ||
+        strstr(name, ".gz") != NULL  ||
+        strstr(name, ".zip") != NULL ||
+        strstr(name, ".tgz") != NULL ||
+        strstr(name, ".bz2") != NULL ||
+        strstr(name, ".xz") != NULL  ||
+        strstr(name, ".7z") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Return appropriate ANSI color code based on file type and metadata */
+const char *get_file_color(const char *name, mode_t mode) {
+    if (S_ISLNK(mode)) {
+        return COLOR_PINK;
+    } else if (S_ISDIR(mode)) {
+        return COLOR_BLUE;
+    } else if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISFIFO(mode) || S_ISSOCK(mode)) {
+        return COLOR_REVERSE;
+    } else if (is_archive(name)) {
+        return COLOR_RED;
+    } else if (S_ISREG(mode) && (mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+        return COLOR_GREEN;
+    }
+    return NULL;
+}
+
+/* Print filename with appropriate color */
+void print_colored_name(const char *name, mode_t mode) {
+    const char *color = get_file_color(name, mode);
+    if (color) {
+        printf("%s%s%s", color, name, COLOR_RESET);
+    } else {
+        printf("%s", name);
+    }
+}
 
 /* Comparison function for qsort to sort string pointers alphabetically */
 int compare_filenames(const void *a, const void *b) {
@@ -83,7 +131,7 @@ void mode_to_letters(mode_t mode, char str[]) {
 }
 
 /* Display filenames in multiple columns: formatted "down then across" (vertical) */
-void display_columns_down_across(char **names, size_t count) {
+void display_columns_down_across(const char *dir, char **names, size_t count) {
     if (count == 0) return;
 
     int term_width = get_terminal_width();
@@ -107,11 +155,19 @@ void display_columns_down_across(char **names, size_t count) {
         for (int c = 0; c < num_cols; c++) {
             int idx = r + c * num_rows;
             if ((size_t)idx < count) {
+                char full_path[1024];
+                snprintf(full_path, sizeof(full_path), "%s/%s", dir, names[idx]);
+                struct stat st;
+                memset(&st, 0, sizeof(st));
+                lstat(full_path, &st);
+
                 int next_idx = r + (c + 1) * num_rows;
                 if (c + 1 < num_cols && (size_t)next_idx < count) {
-                    printf("%-*s", col_width, names[idx]);
+                    print_colored_name(names[idx], st.st_mode);
+                    int pad = col_width - (int)strlen(names[idx]);
+                    if (pad > 0) printf("%*s", pad, "");
                 } else {
-                    printf("%s", names[idx]);
+                    print_colored_name(names[idx], st.st_mode);
                 }
             }
         }
@@ -120,7 +176,7 @@ void display_columns_down_across(char **names, size_t count) {
 }
 
 /* Display filenames horizontally across rows wrapping when line exceeds terminal width (-x) */
-void display_columns_horizontal(char **names, size_t count) {
+void display_columns_horizontal(const char *dir, char **names, size_t count) {
     if (count == 0) return;
 
     int term_width = get_terminal_width();
@@ -138,11 +194,19 @@ void display_columns_horizontal(char **names, size_t count) {
     if (num_cols < 1) num_cols = 1;
 
     for (size_t i = 0; i < count; i++) {
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir, names[i]);
+        struct stat st;
+        memset(&st, 0, sizeof(st));
+        lstat(full_path, &st);
+
         int is_last_in_row = ((i + 1) % num_cols == 0) || (i + 1 == count);
+        print_colored_name(names[i], st.st_mode);
         if (is_last_in_row) {
-            printf("%s\n", names[i]);
+            printf("\n");
         } else {
-            printf("%-*s", col_width, names[i]);
+            int pad = col_width - (int)strlen(names[i]);
+            if (pad > 0) printf("%*s", pad, "");
         }
     }
 }
@@ -222,14 +286,15 @@ void display_long_listing(const char *dir, char **names, size_t count) {
             strcpy(time_str, "??? ?? ??:??");
         }
 
-        printf("%s %*lu %-*s %-*s %*lld %s %s",
+        printf("%s %*lu %-*s %-*s %*lld %s ",
                perm_str,
                max_link_len, (unsigned long)stats[i].st_nlink,
                max_owner_len, owners[i],
                max_group_len, groups[i],
                max_size_len, (long long)stats[i].st_size,
-               time_str,
-               names[i]);
+               time_str);
+
+        print_colored_name(names[i], stats[i].st_mode);
 
         /* If symbolic link, print target */
         if (S_ISLNK(stats[i].st_mode)) {
@@ -301,11 +366,11 @@ void do_ls(const char *dir) {
             display_long_listing(dir, names, count);
             break;
         case MODE_HORIZONTAL:
-            display_columns_horizontal(names, count);
+            display_columns_horizontal(dir, names, count);
             break;
         case MODE_VERTICAL:
         default:
-            display_columns_down_across(names, count);
+            display_columns_down_across(dir, names, count);
             break;
     }
 
